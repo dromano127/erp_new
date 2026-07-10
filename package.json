@@ -1,0 +1,15 @@
+{
+  "name": "erp-replica",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Réplica em Postgres (Neon) dos dados da API Tiny/Olist ERP v3 — relatórios + backup",
+  "scripts": {
+    "db:apply": "node scripts/apply-sql.mjs db/schema.sql",
+    "db:query": "node scripts/query.mjs"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.0",
+    "undici": "^7.0.0"
+  }
+}
