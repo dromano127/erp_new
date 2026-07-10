@@ -75,6 +75,14 @@ async function resumableListDetail(recurso, listPath, detailPath, persistFn, {
     const page = await get(listPath, { ...query, limit: pageSize, offset });
     const itens = page?.itens ?? [];
     for (const item of itens) {
+      // checa o deadline POR ITEM: uma página pode levar 100-200s; sem isso o
+      // batch estoura o timeout do processo. Ao pausar mid-página, salvamos o
+      // offset do INÍCIO da página (esta será refeita — persist é idempotente).
+      if (Date.now() >= deadline) {
+        await setCursor(recurso, { last_offset: offset });
+        log(`${recurso}: pausado no offset ${offset} (deadline, mid-página)`);
+        return false;
+      }
       const detail = await get(detailPath(item.id));
       if (detail) await persistFn(detail, item);
     }
@@ -209,91 +217,65 @@ export async function syncNotas({ incremental = false, fullDays = 3650, deadline
     }, { query, deadline });
 }
 
-export async function syncOrdemCompra({ incremental = false, fullDays = 3650 } = {}) {
+export async function syncOrdemCompra({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('ordem_compra');
   const query = windowQuery(cur, incremental, incremental ? 30 : fullDays);
-  log('ordem-compra', JSON.stringify(query));
-  for await (const oc of paginate('/ordem-compra', query)) {
-    const detail = await get(`/ordem-compra/${oc.id}`);
-    if (detail) await P.persistOrdemCompra(detail);
-  }
-  await setCursor('ordem_compra', { last_sync_at: new Date().toISOString(), full_done: true });
+  return resumableListDetail('ordem_compra', '/ordem-compra', (id) => `/ordem-compra/${id}`,
+    (detail) => P.persistOrdemCompra(detail), { query, deadline });
 }
 
-export async function syncOrdemServico({ incremental = false, fullDays = 3650 } = {}) {
+export async function syncOrdemServico({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('ordem_servico');
   const w = windowQuery(cur, incremental, incremental ? 30 : fullDays);
   const query = { dataInicialEmissao: w.dataInicial, dataFinalEmissao: w.dataFinal };
-  log('ordem-servico', JSON.stringify(query));
-  for await (const os of paginate('/ordem-servico', query)) {
-    const detail = await get(`/ordem-servico/${os.id}`);
-    if (detail) await P.persistOrdemServico(detail);
-  }
-  await setCursor('ordem_servico', { last_sync_at: new Date().toISOString(), full_done: true });
+  return resumableListDetail('ordem_servico', '/ordem-servico', (id) => `/ordem-servico/${id}`,
+    (detail) => P.persistOrdemServico(detail), { query, deadline });
 }
 
-export async function syncContasReceber({ incremental = false, fullDays = 3650 } = {}) {
+export async function syncContasReceber({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('contas_receber');
   const w = windowQuery(cur, incremental, incremental ? 30 : fullDays);
   const query = { dataInicialEmissao: w.dataInicial, dataFinalEmissao: w.dataFinal };
-  log('contas-receber', JSON.stringify(query));
-  for await (const cr of paginate('/contas-receber', query)) {
-    const detail = await get(`/contas-receber/${cr.id}`);
-    if (!detail) continue;
-    await P.persistContaReceber(detail);
-    const rec = await get(`/contas-receber/${cr.id}/recebimentos`);
-    if (rec) await P.persistBaixas('cr', cr.id, rec.itens ?? rec);
-  }
-  await setCursor('contas_receber', { last_sync_at: new Date().toISOString(), full_done: true });
+  return resumableListDetail('contas_receber', '/contas-receber', (id) => `/contas-receber/${id}`,
+    async (detail, item) => {
+      await P.persistContaReceber(detail);
+      const rec = await get(`/contas-receber/${item.id}/recebimentos`);
+      if (rec) await P.persistBaixas('cr', item.id, rec.itens ?? rec);
+    }, { query, deadline });
 }
 
-export async function syncContasPagar({ incremental = false, fullDays = 3650 } = {}) {
+export async function syncContasPagar({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('contas_pagar');
   const w = windowQuery(cur, incremental, incremental ? 30 : fullDays);
   const query = { dataInicialEmissao: w.dataInicial, dataFinalEmissao: w.dataFinal };
-  log('contas-pagar', JSON.stringify(query));
-  for await (const cp of paginate('/contas-pagar', query)) {
-    const detail = await get(`/contas-pagar/${cp.id}`);
-    if (!detail) continue;
-    await P.persistContaPagar(detail);
-    const rec = await get(`/contas-pagar/${cp.id}/recebimentos`);
-    if (rec) await P.persistBaixas('cp', cp.id, rec.itens ?? rec);
-  }
-  await setCursor('contas_pagar', { last_sync_at: new Date().toISOString(), full_done: true });
+  return resumableListDetail('contas_pagar', '/contas-pagar', (id) => `/contas-pagar/${id}`,
+    async (detail, item) => {
+      await P.persistContaPagar(detail);
+      const rec = await get(`/contas-pagar/${item.id}/recebimentos`);
+      if (rec) await P.persistBaixas('cp', item.id, rec.itens ?? rec);
+    }, { query, deadline });
 }
 
-export async function syncSeparacao({ incremental = false, fullDays = 3650 } = {}) {
+export async function syncSeparacao({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('separacao');
   const query = windowQuery(cur, incremental, incremental ? 30 : fullDays);
-  log('separacao', JSON.stringify(query));
-  for await (const sp of paginate('/separacao', query)) {
-    const detail = await get(`/separacao/${sp.id}`);
-    if (detail) await P.persistSeparacao(detail);
-  }
-  await setCursor('separacao', { last_sync_at: new Date().toISOString(), full_done: true });
+  return resumableListDetail('separacao', '/separacao', (id) => `/separacao/${id}`,
+    (detail) => P.persistSeparacao(detail), { query, deadline });
 }
 
-export async function syncExpedicao({ incremental = false, fullDays = 3650 } = {}) {
+export async function syncExpedicao({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('expedicao');
   const query = windowQuery(cur, incremental, incremental ? 30 : fullDays);
-  log('expedicao', JSON.stringify(query));
-  for await (const ag of paginate('/expedicao', query)) {
-    const detail = await get(`/expedicao/${ag.id}`);
-    if (detail) await P.persistExpedicaoAgrupamento(detail);
-  }
-  await setCursor('expedicao', { last_sync_at: new Date().toISOString(), full_done: true });
+  return resumableListDetail('expedicao', '/expedicao', (id) => `/expedicao/${id}`,
+    (detail) => P.persistExpedicaoAgrupamento(detail), { query, deadline });
 }
 
-export async function syncCrm({ incremental = false, fullDays = 3650 } = {}) {
+export async function syncCrm({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('crm');
   const w = windowQuery(cur, incremental, incremental ? 30 : fullDays);
   const query = { filtrarPor: 'data-criacao', dataInicial: w.dataInicial, dataFinal: w.dataFinal };
-  log('crm/assuntos', JSON.stringify(query));
-  for await (const a of paginate('/crm/assuntos', query)) {
-    const detail = await get(`/crm/assuntos/${a.id}`);
-    if (detail) await P.persistCrmAssunto(detail);
-  }
-  await setCursor('crm', { last_sync_at: new Date().toISOString(), full_done: true });
+  return resumableListDetail('crm', '/crm/assuntos', (id) => `/crm/assuntos/${id}`,
+    (detail) => P.persistCrmAssunto(detail), { query, deadline });
 }
 
 // =====================================================================
@@ -396,13 +378,13 @@ export async function runBatch(seconds = 480, days = 30) {
     ['estoque', async () => (await produtosDone()) ? syncEstoque({ deadline }) : true],
     ['pedidos', () => syncPedidos({ fullDays: days, deadline })],
     ['notas', () => syncNotas({ fullDays: days, deadline })],
-    ['ordem-compra', () => syncOrdemCompra({ fullDays: days })],
-    ['ordem-servico', () => syncOrdemServico({ fullDays: days })],
-    ['contas-receber', () => syncContasReceber({ fullDays: days })],
-    ['contas-pagar', () => syncContasPagar({ fullDays: days })],
-    ['separacao', () => syncSeparacao({ fullDays: days })],
-    ['expedicao', () => syncExpedicao({ fullDays: days })],
-    ['crm', () => syncCrm({ fullDays: days })],
+    ['ordem-compra', () => syncOrdemCompra({ fullDays: days, deadline })],
+    ['ordem-servico', () => syncOrdemServico({ fullDays: days, deadline })],
+    ['contas-receber', () => syncContasReceber({ fullDays: days, deadline })],
+    ['contas-pagar', () => syncContasPagar({ fullDays: days, deadline })],
+    ['separacao', () => syncSeparacao({ fullDays: days, deadline })],
+    ['expedicao', () => syncExpedicao({ fullDays: days, deadline })],
+    ['crm', () => syncCrm({ fullDays: days, deadline })],
   ];
 
   for (const [name, fn] of steps) {
