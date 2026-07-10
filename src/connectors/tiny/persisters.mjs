@@ -3,7 +3,7 @@
 // + replaceChildren das tabelas-filhas. Todos gravam source='tiny' e payload cru.
 
 import { sql } from '../../lib/db.mjs';
-import { upsert, upsertMany, replaceChildren, s, num, int, bool, dt } from '../../lib/upsert.mjs';
+import { upsert, upsertMany, replaceChildren, dedupeBy, s, num, int, bool, dt } from '../../lib/upsert.mjs';
 
 const SRC = 'tiny';
 
@@ -218,36 +218,36 @@ export async function persistProduto(d) {
     payload: d,
   });
 
-  const forn = (d.fornecedores ?? []).map((f) => ({
+  const forn = dedupeBy((d.fornecedores ?? []).map((f) => ({
     source: SRC, produto_id: int(d.id), contato_id: int(f.id),
     codigo_no_fornecedor: s(f.codigoProdutoNoFornecedor),
-  }));
+  })), ['contato_id']);
   await replaceChildren('produto_fornecedores', 'produto_id', int(d.id), forn);
 
-  const kit = (d.kit ?? []).map((k) => ({
+  const kit = dedupeBy((d.kit ?? []).map((k) => ({
     source: SRC, kit_id: int(d.id), componente_id: int(k.produto?.id), quantidade: num(k.quantidade),
-  }));
+  })), ['componente_id']);
   await replaceChildren('produto_kit', 'kit_id', int(d.id), kit);
 
-  const prod = (d.producao?.produtos ?? []).map((p) => ({
+  const prod = dedupeBy((d.producao?.produtos ?? []).map((p) => ({
     source: SRC, produto_id: int(d.id), insumo_id: int(p.produto?.id), quantidade: num(p.quantidade),
-  }));
+  })), ['insumo_id']);
   await replaceChildren('produto_producao', 'produto_id', int(d.id), prod);
 
   // grade das variações: cada variação tem seu próprio produto (id) e grade[].
   for (const v of d.variacoes ?? []) {
-    const grade = (v.grade ?? []).map((g) => ({
+    const grade = dedupeBy((v.grade ?? []).map((g) => ({
       source: SRC, produto_id: int(v.id), chave: s(g.chave), valor: s(g.valor),
-    }));
+    })), ['chave']);
     await replaceChildren('produto_grade', 'produto_id', int(v.id), grade);
   }
 }
 
 export async function persistProdutoTags(produtoId, tags) {
-  const rows = (tags ?? []).map((t) => ({
+  const rows = dedupeBy((tags ?? []).map((t) => ({
     source: SRC, produto_id: int(produtoId),
     tag: s(t.nome ?? t), grupo: s(t.nomeGrupoTag),
-  }));
+  })), ['tag']);
   await replaceChildren('produto_tags', 'produto_id', int(produtoId), rows);
 }
 
@@ -393,7 +393,7 @@ export async function persistNota(d) {
     payload: d,
   });
 
-  const itens = (d.itens ?? []).map((it) => ({
+  const itens = dedupeBy((d.itens ?? []).map((it) => ({
     source: SRC, nota_id: int(d.id), item_id: int(it.idItem),
     produto_id: int(it.idProduto), codigo: s(it.codigo), ncm: s(it.ncm),
     cfop: s(it.cfop), descricao: s(it.descricao), unidade: s(it.unidade),
@@ -403,7 +403,7 @@ export async function persistNota(d) {
       pis: it.pis, icms: it.icms, cofins: it.cofins, simples: it.simples,
       ipi: it.ipi, ibsCbsIs: it.ibsCbsIs,
     },
-  }));
+  })), ['item_id']);
   await replaceChildren('nf_itens', 'nota_id', int(d.id), itens);
 
   const parc = (d.parcelas ?? []).map((p, i) => ({
@@ -593,9 +593,9 @@ export async function persistMarcadores(objeto, objetoId, marcadores) {
     'DELETE FROM marcadores WHERE source = $1 AND objeto = $2 AND objeto_id = $3',
     [SRC, objeto, int(objetoId)],
   );
-  const rows = (marcadores ?? []).map((m) => ({
+  const rows = dedupeBy((marcadores ?? []).map((m) => ({
     source: SRC, objeto, objeto_id: int(objetoId),
     marcador: s(m.descricao ?? m), cor: s(m.cor),
-  }));
+  })), ['marcador']);
   await upsertMany('marcadores', rows, null);
 }

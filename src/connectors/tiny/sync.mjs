@@ -83,8 +83,13 @@ async function resumableListDetail(recurso, listPath, detailPath, persistFn, {
         log(`${recurso}: pausado no offset ${offset} (deadline, mid-página)`);
         return false;
       }
-      const detail = await get(detailPath(item.id));
-      if (detail) await persistFn(detail, item);
+      try {
+        const detail = await get(detailPath(item.id));
+        if (detail) await persistFn(detail, item);
+      } catch (err) {
+        // um registro problemático não pode travar o recurso inteiro.
+        log(`${recurso}: ERRO no id ${item.id} — ${err.message} (pulado)`);
+      }
     }
     const total = page?.paginacao?.total ?? 0;
     offset += pageSize;

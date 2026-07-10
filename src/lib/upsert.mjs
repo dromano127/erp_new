@@ -51,6 +51,20 @@ export async function upsertMany(table, rows, conflict) {
 }
 
 /**
+ * Remove linhas duplicadas por um conjunto de colunas-chave (mantém a última).
+ * A API às vezes repete itens (ex.: mesmo insumo no array de produção),
+ * o que quebraria o INSERT puro pós-DELETE do replaceChildren.
+ */
+export function dedupeBy(rows, keyCols) {
+  const map = new Map();
+  for (const r of rows) {
+    const k = keyCols.map((c) => r[c]).join('');
+    map.set(k, r);
+  }
+  return [...map.values()];
+}
+
+/**
  * Substitui as linhas-filhas de um pai: apaga as existentes e reinsere.
  * Usado para itens/parcelas/grade onde não há id estável por linha.
  */
