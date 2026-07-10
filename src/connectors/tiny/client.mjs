@@ -31,15 +31,24 @@ async function request(method, path, { query, body } = {}) {
   for (let attempt = 0; ; attempt++) {
     await throttle();
     const token = await getAccessToken();
-    const res = await fetch(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+
+    let res;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (err) {
+      // blip de rede/proxy ("fetch failed") — re-tenta com backoff
+      if (attempt >= MAX_RETRIES) throw new Error(`${method} ${path} → rede: ${err.message}`);
+      await sleep(Math.min(30_000, 2 ** attempt * 1000));
+      continue;
+    }
 
     if (res.status === 429 || res.status >= 500) {
       if (attempt >= MAX_RETRIES) {

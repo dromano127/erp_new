@@ -17,7 +17,18 @@ if (typeof process.loadEnvFile === 'function' && existsSync('.env')) {
 
 const proxy = process.env.HTTPS_PROXY || process.env.https_proxy;
 if (proxy) {
-  setGlobalDispatcher(new ProxyAgent(proxy));
+  // keep-alive alto + timeouts folgados: o proxy pode fechar conexões ociosas
+  // durante cargas longas; sem isso o undici derruba com "fetch failed".
+  setGlobalDispatcher(
+    new ProxyAgent({
+      uri: proxy,
+      connections: 8,
+      keepAliveTimeout: 60_000,
+      keepAliveMaxTimeout: 120_000,
+      headersTimeout: 60_000,
+      bodyTimeout: 60_000,
+    }),
+  );
 }
 
 const url = process.env.DATABASE_URL;
@@ -25,5 +36,38 @@ if (!url) {
   throw new Error('DATABASE_URL não definido (connection string do Neon).');
 }
 
-// sql`...` para queries parametrizadas; sql.query(text, params) para dinâmicas.
-export const sql = neon(url);
+const _sql = neon(url);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Erros transitórios de rede/proxy (não são erros de SQL) → vale re-tentar.
+function isTransient(err) {
+  const m = (err?.message || '').toLowerCase();
+  return (
+    err?.name === 'TypeError' ||           // undici "fetch failed"
+    m.includes('fetch failed') ||
+    m.includes('econnreset') ||
+    m.includes('econnrefused') ||
+    m.includes('etimedout') ||
+    m.includes('socket') ||
+    m.includes('network') ||
+    m.includes('terminated') ||
+    m.includes('other side closed')
+  );
+}
+
+// Query com retry/backoff (1s,2s,4s,8s,16s). Erros de SQL não são re-tentados.
+async function query(text, params) {
+  const MAX = 5;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await _sql.query(text, params);
+    } catch (err) {
+      if (attempt >= MAX || !isTransient(err)) throw err;
+      await sleep(Math.min(16_000, 2 ** attempt * 1000));
+    }
+  }
+}
+
+// Interface usada em todo o projeto: sql.query(text, params) com retry embutido.
+// `sql.raw` expõe o cliente neon original (tag template) se necessário.
+export const sql = { query, raw: _sql };
