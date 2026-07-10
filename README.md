@@ -55,24 +55,60 @@ NEON_API_KEY=... npx neonctl connection-string production \
   --project-id sparkling-heart-63527951 --database-name neondb
 ```
 
+## Conector Tiny (OAuth + carga/sync)
+
+### 1. Autenticar (uma vez, interativo)
+
+```bash
+node scripts/tiny-auth.mjs url          # imprime a URL — faça login e autorize
+node scripts/tiny-auth.mjs code <CODE>  # troca o ?code= do redirect por tokens
+node scripts/tiny-auth.mjs status       # confere validade dos tokens
+```
+
+Os tokens ficam em `sync_tokens`; `getAccessToken()` renova sozinho via
+`refresh_token` quando faltam <60s para expirar (o refresh token do Tiny expira
+se não for usado — por isso o incremental deve rodar em ciclo).
+
+### 2. Sincronizar
+
+```bash
+node scripts/tiny-sync.mjs full         # carga completa (ordem da seção 5.3)
+node scripts/tiny-sync.mjs incremental  # dataAtualizacao/dataAlteracao + janelas
+node scripts/tiny-sync.mjs pedidos      # um recurso só (debug)
+```
+
+Sugestão: `full` de madrugada, `incremental` a cada 15–60 min (cron).
+
+**Como funciona:**
+- **Cliente HTTP** (`client.mjs`): throttle global ~1 req/s (`SYNC_RATE_LIMIT`),
+  backoff exponencial em 429/5xx (respeita `Retry-After`), paginação automática
+  do envelope `{ itens, paginacao }`.
+- **Padrão lista→detalhe:** a listagem descobre ids/mudanças; o `GET /recurso/{id}`
+  é a fonte da verdade (upsert por `(source, source_id)`, `payload` cru guardado).
+- **Cursor incremental** em `sync_state` por recurso; vínculo pedido↔conta a
+  receber capturado na direção inversa (`GET /contas-receber?idVenda=`).
+- **Estoque** é snapshot dos produtos com `estoque.controlar=true`.
+
 ## Estrutura
 
 ```
-db/schema.sql        DDL canônico (idempotente)
-scripts/apply-sql.mjs  aplica um .sql via HTTP
-scripts/query.mjs      query ad-hoc via HTTP
-src/lib/db.mjs         cliente Neon (HTTP + proxy)
-src/connectors/        (próximo passo) conector Tiny: OAuth + carga/sync
+db/schema.sql              DDL canônico (idempotente)
+scripts/apply-sql.mjs      aplica um .sql via HTTP
+scripts/query.mjs          query ad-hoc via HTTP
+scripts/tiny-auth.mjs      fluxo OAuth2 (url / code / refresh / status)
+scripts/tiny-sync.mjs      runner de sync (full / incremental / <recurso>)
+src/lib/db.mjs             cliente Neon (HTTP + proxy)
+src/lib/upsert.mjs         upsert genérico + coerção de tipos
+src/connectors/tiny/
+  auth.mjs                 OAuth2 + persistência/refresh de tokens
+  client.mjs               HTTP: throttle, backoff, paginação
+  persisters.mjs           mapeia detalhe da API → tabelas (todos os recursos)
+  sync.mjs                 orquestração das fases 1–4 + incremental
 ```
 
 ## Próximos passos
 
-1. **Conector Tiny** (`src/connectors/tiny/`): fluxo OAuth2 (persistir tokens em
-   `sync_tokens`, refresh em ciclo), cliente HTTP com throttle (~1 req/s) e backoff
-   em 429/5xx.
-2. **Carga full** na ordem da seção 5.3: dimensões → contatos/produtos →
-   transações → snapshots. Upsert por `(source, source_id)` com `ON CONFLICT`.
-3. **Sync incremental** (seção 5.4): `dataAtualizacao`/`dataAlteracao` por recurso,
-   guardando cursor em `sync_state`.
-4. **Relatórios** (seção 5.5): vendas por canal/vendedor, fiscal por CFOP, aging
-   financeiro, lead time logístico, cobertura de estoque.
+- **Relatórios** (seção 5.5): vendas por canal/vendedor, fiscal por CFOP, aging
+  financeiro, lead time logístico, cobertura de estoque — como views SQL.
+- **XML fiscal**: baixar/armazenar `GET /notas/{id}/xml` das notas ≥ emitida.
+- **Agendamento**: cron/worker chamando `tiny-sync.mjs incremental` em ciclo.
