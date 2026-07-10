@@ -88,5 +88,13 @@ export const int = (v) => {
   return n === null ? null : Math.trunc(n);
 };
 export const bool = (v) => (v === undefined || v === null ? null : Boolean(v));
-// Data/hora: '' → null; passa o resto como string (Postgres faz o cast).
-export const dt = (v) => (v === undefined || v === null || v === '' ? null : v);
+// Data/hora: '' → null. A API às vezes devolve datas parciais (competência
+// como "AAAA-MM" sem dia) que não castam pra DATE — normalizamos p/ dia 01.
+// "AAAA" isolado → "AAAA-01-01". O resto passa como string (Postgres casta).
+export const dt = (v) => {
+  if (v === undefined || v === null || v === '') return null;
+  const str = String(v).trim();
+  if (/^\d{4}-\d{2}$/.test(str)) return `${str}-01`;
+  if (/^\d{4}$/.test(str)) return `${str}-01-01`;
+  return str;
+};
