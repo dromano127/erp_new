@@ -31,6 +31,8 @@ const mode = process.argv[2] || 'incremental';
 try {
   if (mode === 'full') await S.runFull();
   else if (mode === 'incremental') await S.runIncremental();
+  else if (mode === 'recent') await S.runRecent(Number(process.argv[3]) || 90);
+  else if (mode === 'initial') { await S.syncDimensoes(); await S.syncContatos(); await S.syncProdutos(); await S.syncEstoque(); }
   else if (only[mode]) await only[mode]();
   else {
     console.error(`Modo desconhecido: ${mode}`);

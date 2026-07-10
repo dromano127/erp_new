@@ -8,6 +8,21 @@ import * as P from './persisters.mjs';
 const SRC = 'tiny';
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
+// Isola falhas por recurso: 401/403 (sem permissão) e outros erros viram aviso
+// e não derrubam a sincronização dos demais recursos.
+async function safe(label, fn) {
+  try {
+    await fn();
+  } catch (err) {
+    const m = err?.message || String(err);
+    if (m.includes('→ 401') || m.includes('→ 403')) {
+      log(`SKIP ${label}: sem permissão (${m.match(/→ \d+/)?.[0] || 'auth'})`);
+    } else {
+      log(`ERRO ${label}: ${m}`);
+    }
+  }
+}
+
 // --- cursor -----------------------------------------------------------
 async function getCursor(recurso) {
   const rows = await sql.query(
@@ -33,13 +48,15 @@ const toDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
 // FASE 1 — dimensões (carga completa, baixa frequência)
 // =====================================================================
 export async function syncDimensoes() {
-  log('dimensões: /info');
-  const info = await get('/info');
-  if (info) await P.persistEmpresa(info);
+  await safe('/info', async () => {
+    const info = await get('/info');
+    if (info) await P.persistEmpresa(info);
+  });
 
-  log('dimensões: /categorias/todas');
-  const cats = await get('/categorias/todas');
-  if (cats) await P.persistCategoriasTree(cats);
+  await safe('/categorias/todas', async () => {
+    const cats = await get('/categorias/todas');
+    if (cats) await P.persistCategoriasTree(cats);
+  });
 
   const simple = [
     ['/marcas', P.persistMarca],
@@ -55,23 +72,30 @@ export async function syncDimensoes() {
     ['/crm/estagios', P.persistCrmEstagio],
   ];
   for (const [path, fn] of simple) {
-    log('dimensões:', path);
-    for await (const item of paginate(path)) await fn(item);
+    await safe(path, async () => {
+      let n = 0;
+      for await (const item of paginate(path)) { await fn(item); n++; }
+      log(`dimensões: ${path} → ${n}`);
+    });
   }
 
   // formas-envio: detalhe traz formasFrete
-  log('dimensões: /formas-envio (+ detalhe)');
-  for await (const fe of paginate('/formas-envio')) {
-    const detail = await get(`/formas-envio/${fe.id}`);
-    await P.persistFormaEnvio(detail ?? fe);
-  }
+  await safe('/formas-envio', async () => {
+    for await (const fe of paginate('/formas-envio')) {
+      const detail = await get(`/formas-envio/${fe.id}`);
+      await P.persistFormaEnvio(detail ?? fe);
+    }
+    log('dimensões: /formas-envio (+ detalhe) ok');
+  });
 
   // listas-precos: detalhe traz exceções
-  log('dimensões: /listas-precos (+ detalhe)');
-  for await (const lp of paginate('/listas-precos')) {
-    const detail = await get(`/listas-precos/${lp.id}`);
-    await P.persistListaPreco(detail ?? lp);
-  }
+  await safe('/listas-precos', async () => {
+    for await (const lp of paginate('/listas-precos')) {
+      const detail = await get(`/listas-precos/${lp.id}`);
+      await P.persistListaPreco(detail ?? lp);
+    }
+    log('dimensões: /listas-precos (+ detalhe) ok');
+  });
 
   await setCursor('dimensoes', { last_sync_at: new Date().toISOString(), full_done: true });
 }
@@ -283,35 +307,54 @@ export async function syncEstoque() {
 // Runners
 // =====================================================================
 export async function runFull() {
-  await syncDimensoes();
-  await syncContatos();
-  await syncProdutos();
-  await syncPedidos();
-  await syncNotas();
-  await syncOrdemCompra();
-  await syncOrdemServico();
-  await syncContasReceber();
-  await syncContasPagar();
-  await syncSeparacao();
-  await syncExpedicao();
-  await syncCrm();
-  await syncEstoque();
+  await safe('dimensoes', () => syncDimensoes());
+  await safe('contatos', () => syncContatos());
+  await safe('produtos', () => syncProdutos());
+  await safe('pedidos', () => syncPedidos());
+  await safe('notas', () => syncNotas());
+  await safe('ordem-compra', () => syncOrdemCompra());
+  await safe('ordem-servico', () => syncOrdemServico());
+  await safe('contas-receber', () => syncContasReceber());
+  await safe('contas-pagar', () => syncContasPagar());
+  await safe('separacao', () => syncSeparacao());
+  await safe('expedicao', () => syncExpedicao());
+  await safe('crm', () => syncCrm());
+  await safe('estoque', () => syncEstoque());
   log('carga full concluída');
 }
 
+// Carga inicial pragmática: cadastros finitos + janela recente de transações.
+// O backfill histórico completo (runFull) deve rodar num worker persistente.
+export async function runRecent(days = 90) {
+  await safe('dimensoes', () => syncDimensoes());
+  await safe('contatos', () => syncContatos());
+  await safe('produtos', () => syncProdutos());
+  await safe('estoque', () => syncEstoque());
+  await safe('pedidos', () => syncPedidos({ fullDays: days }));
+  await safe('notas', () => syncNotas({ fullDays: days }));
+  await safe('ordem-compra', () => syncOrdemCompra({ fullDays: days }));
+  await safe('ordem-servico', () => syncOrdemServico({ fullDays: days }));
+  await safe('contas-receber', () => syncContasReceber({ fullDays: days }));
+  await safe('contas-pagar', () => syncContasPagar({ fullDays: days }));
+  await safe('separacao', () => syncSeparacao({ fullDays: days }));
+  await safe('expedicao', () => syncExpedicao({ fullDays: days }));
+  await safe('crm', () => syncCrm({ fullDays: days }));
+  log(`carga recent (${days} dias) concluída`);
+}
+
 export async function runIncremental() {
-  await syncDimensoes(); // dimensões são baratas; recarrega sempre
-  await syncContatos({ incremental: true });
-  await syncProdutos({ incremental: true });
-  await syncPedidos({ incremental: true });
-  await syncNotas({ incremental: true });
-  await syncOrdemCompra({ incremental: true });
-  await syncOrdemServico({ incremental: true });
-  await syncContasReceber({ incremental: true });
-  await syncContasPagar({ incremental: true });
-  await syncSeparacao({ incremental: true });
-  await syncExpedicao({ incremental: true });
-  await syncCrm({ incremental: true });
-  await syncEstoque();
+  await safe('dimensoes', () => syncDimensoes()); // baratas; recarrega sempre
+  await safe('contatos', () => syncContatos({ incremental: true }));
+  await safe('produtos', () => syncProdutos({ incremental: true }));
+  await safe('pedidos', () => syncPedidos({ incremental: true }));
+  await safe('notas', () => syncNotas({ incremental: true }));
+  await safe('ordem-compra', () => syncOrdemCompra({ incremental: true }));
+  await safe('ordem-servico', () => syncOrdemServico({ incremental: true }));
+  await safe('contas-receber', () => syncContasReceber({ incremental: true }));
+  await safe('contas-pagar', () => syncContasPagar({ incremental: true }));
+  await safe('separacao', () => syncSeparacao({ incremental: true }));
+  await safe('expedicao', () => syncExpedicao({ incremental: true }));
+  await safe('crm', () => syncCrm({ incremental: true }));
+  await safe('estoque', () => syncEstoque());
   log('sync incremental concluída');
 }
