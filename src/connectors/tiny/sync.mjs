@@ -26,23 +26,67 @@ async function safe(label, fn) {
 // --- cursor -----------------------------------------------------------
 async function getCursor(recurso) {
   const rows = await sql.query(
-    'SELECT last_sync_at, full_done FROM sync_state WHERE source=$1 AND recurso=$2',
+    'SELECT last_sync_at, full_done, last_offset FROM sync_state WHERE source=$1 AND recurso=$2',
     [SRC, recurso],
   );
-  return rows[0] || { last_sync_at: null, full_done: false };
+  return rows[0] || { last_sync_at: null, full_done: false, last_offset: 0 };
 }
-async function setCursor(recurso, { last_sync_at, full_done }) {
+async function setCursor(recurso, { last_sync_at, full_done, last_offset }) {
   await sql.query(
-    `INSERT INTO sync_state (source, recurso, last_sync_at, full_done, updated_at)
-     VALUES ($1,$2,$3,$4, now())
+    `INSERT INTO sync_state (source, recurso, last_sync_at, full_done, last_offset, updated_at)
+     VALUES ($1,$2,$3,$4,$5, now())
      ON CONFLICT (source, recurso) DO UPDATE SET
        last_sync_at = COALESCE(EXCLUDED.last_sync_at, sync_state.last_sync_at),
-       full_done = EXCLUDED.full_done, updated_at = now()`,
-    [SRC, recurso, last_sync_at ?? null, full_done ?? false],
+       full_done = EXCLUDED.full_done,
+       last_offset = COALESCE(EXCLUDED.last_offset, sync_state.last_offset),
+       updated_at = now()`,
+    [SRC, recurso, last_sync_at ?? null, full_done ?? false, last_offset ?? null],
   );
 }
 // data 'YYYY-MM-DD' a partir de um Date/ISO (para os filtros da API)
 const toDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+
+// Erro sinalizando fim do orçamento de tempo do batch (interrupção limpa).
+class Deadline extends Error {}
+
+/**
+ * Runner resumível list→detalhe com orçamento de tempo (batch).
+ * Percorre /listPath paginado a partir de last_offset; para cada item busca
+ * o detalhe e chama persistFn(detail, item). Salva o offset a cada página.
+ * Ao esgotar o tempo (deadline), salva o offset e retorna sem concluir.
+ * Ao terminar, zera o offset e marca full_done.
+ * @returns {Promise<boolean>} true se concluiu o recurso, false se pausou.
+ */
+async function resumableListDetail(recurso, listPath, detailPath, persistFn, {
+  query = {},
+  pageSize = 100,
+  deadline = Infinity,
+} = {}) {
+  const cur = await getCursor(recurso);
+  let offset = cur.full_done ? 0 : (cur.last_offset || 0);
+  if (cur.full_done) await setCursor(recurso, { full_done: false, last_offset: 0 });
+
+  for (;;) {
+    if (Date.now() >= deadline) {
+      await setCursor(recurso, { last_offset: offset });
+      log(`${recurso}: pausado no offset ${offset} (deadline)`);
+      return false;
+    }
+    const page = await get(listPath, { ...query, limit: pageSize, offset });
+    const itens = page?.itens ?? [];
+    for (const item of itens) {
+      const detail = await get(detailPath(item.id));
+      if (detail) await persistFn(detail, item);
+    }
+    const total = page?.paginacao?.total ?? 0;
+    offset += pageSize;
+    await setCursor(recurso, { last_offset: offset });
+    log(`${recurso}: ${Math.min(offset, total)}/${total}`);
+    if (offset >= total || itens.length === 0) break;
+  }
+  await setCursor(recurso, { last_sync_at: new Date().toISOString(), full_done: true, last_offset: 0 });
+  return true;
+}
 
 // =====================================================================
 // FASE 1 — dimensões (carga completa, baixa frequência)
@@ -103,40 +147,22 @@ export async function syncDimensoes() {
 // =====================================================================
 // FASE 2 — cadastros grandes (lista → detalhe)
 // =====================================================================
-export async function syncContatos({ incremental = false } = {}) {
+export async function syncContatos({ incremental = false, deadline = Infinity } = {}) {
   const cur = await getCursor('contatos');
-  const query = incremental && cur.last_sync_at
-    ? { dataAtualizacao: toDate(cur.last_sync_at) }
-    : {};
-  log('contatos', incremental ? `(inc desde ${query.dataAtualizacao})` : '(full)');
-  let n = 0;
-  for await (const c of paginate('/contatos', query)) {
-    const detail = await get(`/contatos/${c.id}`);
-    if (detail) await P.persistContato(detail);
-    n++;
-  }
-  await setCursor('contatos', { last_sync_at: new Date().toISOString(), full_done: true });
-  log(`contatos: ${n} processados`);
+  const query = incremental && cur.last_sync_at ? { dataAtualizacao: toDate(cur.last_sync_at) } : {};
+  return resumableListDetail('contatos', '/contatos', (id) => `/contatos/${id}`,
+    (detail) => P.persistContato(detail), { query, deadline });
 }
 
-export async function syncProdutos({ incremental = false } = {}) {
+export async function syncProdutos({ incremental = false, deadline = Infinity } = {}) {
   const cur = await getCursor('produtos');
-  const query = incremental && cur.last_sync_at
-    ? { dataAlteracao: toDate(cur.last_sync_at) }
-    : {};
-  log('produtos', incremental ? `(inc desde ${query.dataAlteracao})` : '(full)');
-  let n = 0;
-  for await (const p of paginate('/produtos', query)) {
-    const detail = await get(`/produtos/${p.id}`);
-    if (detail) {
+  const query = incremental && cur.last_sync_at ? { dataAlteracao: toDate(cur.last_sync_at) } : {};
+  return resumableListDetail('produtos', '/produtos', (id) => `/produtos/${id}`,
+    async (detail, item) => {
       await P.persistProduto(detail);
-      const tags = await get(`/produtos/${p.id}/tags`);
-      if (tags) await P.persistProdutoTags(p.id, tags.tags ?? tags);
-    }
-    n++;
-  }
-  await setCursor('produtos', { last_sync_at: new Date().toISOString(), full_done: true });
-  log(`produtos: ${n} processados`);
+      const tags = await get(`/produtos/${item.id}/tags`);
+      if (tags) await P.persistProdutoTags(item.id, tags.tags ?? tags);
+    }, { query, deadline });
 }
 
 // =====================================================================
@@ -153,47 +179,34 @@ function windowQuery(cur, incremental, days = 30) {
   return { dataInicial: toDate(ini), dataFinal: toDate(new Date()) };
 }
 
-export async function syncPedidos({ incremental = false, fullDays = 3650 } = {}) {
+export async function syncPedidos({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('pedidos');
   const query = incremental && cur.last_sync_at
     ? { dataAtualizacao: toDate(cur.last_sync_at) }
     : windowQuery(cur, false, fullDays);
-  log('pedidos', JSON.stringify(query));
-  let n = 0;
-  for await (const p of paginate('/pedidos', query)) {
-    const detail = await get(`/pedidos/${p.id}`);
-    if (!detail) continue;
-    await P.persistPedido(detail);
-    const marc = await get(`/pedidos/${p.id}/marcadores`);
-    if (marc) await P.persistMarcadores('pedido', p.id, marc.itens ?? marc);
-
-    // vínculo pedido→contas a receber (idVenda) — capturado na direção inversa
-    if (detail.idNotaFiscal || detail.situacao === 1) {
-      for await (const cr of paginate('/contas-receber', { idVenda: p.id })) {
-        const crDetail = await get(`/contas-receber/${cr.id}`);
-        if (crDetail) await P.persistContaReceber(crDetail, { vendaId: p.id });
+  return resumableListDetail('pedidos', '/pedidos', (id) => `/pedidos/${id}`,
+    async (detail, item) => {
+      await P.persistPedido(detail);
+      const marc = await get(`/pedidos/${item.id}/marcadores`);
+      if (marc) await P.persistMarcadores('pedido', item.id, marc.itens ?? marc);
+      // vínculo pedido→contas a receber (idVenda) — capturado na direção inversa
+      if (detail.idNotaFiscal || detail.situacao === 1) {
+        for await (const cr of paginate('/contas-receber', { idVenda: item.id })) {
+          const crDetail = await get(`/contas-receber/${cr.id}`);
+          if (crDetail) await P.persistContaReceber(crDetail, { vendaId: item.id });
+        }
       }
-    }
-    n++;
-  }
-  await setCursor('pedidos', { last_sync_at: new Date().toISOString(), full_done: true });
-  log(`pedidos: ${n} processados`);
+    }, { query, deadline });
 }
 
-export async function syncNotas({ incremental = false, fullDays = 3650 } = {}) {
+export async function syncNotas({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('notas');
   const query = windowQuery(cur, incremental, incremental ? 7 : fullDays);
-  log('notas', JSON.stringify(query));
-  let n = 0;
-  for await (const nf of paginate('/notas', query)) {
-    const detail = await get(`/notas/${nf.id}`);
-    if (!detail) continue;
-    await P.persistNota(detail);
-    if (detail.marcadores) await P.persistMarcadores('nota', nf.id, detail.marcadores);
-    n++;
-  }
-  await setCursor('notas', { last_sync_at: new Date().toISOString(), full_done: true });
-  log(`notas: ${n} processadas`);
+  return resumableListDetail('notas', '/notas', (id) => `/notas/${id}`,
+    async (detail, item) => {
+      await P.persistNota(detail);
+      if (detail.marcadores) await P.persistMarcadores('nota', item.id, detail.marcadores);
+    }, { query, deadline });
 }
 
 export async function syncOrdemCompra({ incremental = false, fullDays = 3650 } = {}) {
@@ -286,21 +299,31 @@ export async function syncCrm({ incremental = false, fullDays = 3650 } = {}) {
 // =====================================================================
 // FASE 4 — snapshots de estoque (produtos com controlar=true)
 // =====================================================================
-export async function syncEstoque() {
-  log('estoque: snapshot dos produtos com estoque.controlar=true');
+export async function syncEstoque({ deadline = Infinity } = {}) {
+  const cur = await getCursor('estoque');
+  let start = cur.full_done ? 0 : (cur.last_offset || 0);
+  if (cur.full_done) await setCursor('estoque', { full_done: false, last_offset: 0 });
+
   const rows = await sql.query(
     `SELECT source_id FROM produtos
      WHERE source=$1 AND situacao <> 'E'
-       AND COALESCE((payload->'estoque'->>'controlar')::boolean, false) = true`,
+       AND COALESCE((payload->'estoque'->>'controlar')::boolean, false) = true
+     ORDER BY source_id`,
     [SRC],
   );
-  let n = 0;
-  for (const r of rows) {
-    const est = await get(`/estoque/${r.source_id}`);
-    if (est) { await P.persistEstoque(est); n++; }
+  for (let i = start; i < rows.length; i++) {
+    if (Date.now() >= deadline) {
+      await setCursor('estoque', { last_offset: i });
+      log(`estoque: pausado em ${i}/${rows.length} (deadline)`);
+      return false;
+    }
+    const est = await get(`/estoque/${rows[i].source_id}`);
+    if (est) await P.persistEstoque(est);
+    if (i % 50 === 0) { await setCursor('estoque', { last_offset: i }); log(`estoque: ${i}/${rows.length}`); }
   }
-  await setCursor('estoque', { last_sync_at: new Date().toISOString(), full_done: true });
-  log(`estoque: ${n} snapshots`);
+  await setCursor('estoque', { last_sync_at: new Date().toISOString(), full_done: true, last_offset: 0 });
+  log(`estoque: ${rows.length} snapshots`);
+  return true;
 }
 
 // =====================================================================
@@ -340,6 +363,57 @@ export async function runRecent(days = 90) {
   await safe('expedicao', () => syncExpedicao({ fullDays: days }));
   await safe('crm', () => syncCrm({ fullDays: days }));
   log(`carga recent (${days} dias) concluída`);
+}
+
+// safe() que propaga o resultado da fn (para detectar pausa por deadline).
+async function safeRet(label, fn) {
+  try { return await fn(); }
+  catch (err) {
+    const m = err?.message || String(err);
+    if (m.includes('→ 401') || m.includes('→ 403')) log(`SKIP ${label}: sem permissão`);
+    else log(`ERRO ${label}: ${m}`);
+    return 'error';
+  }
+}
+
+/**
+ * Carga em batch com orçamento de tempo (segundos). Feito para o ambiente
+ * efêmero: cada invocação avança até o deadline e persiste o offset; a próxima
+ * retoma de onde parou. Roda em foreground (não morre por suspensão de container).
+ * Retorna true quando TODOS os recursos estão concluídos.
+ */
+export async function runBatch(seconds = 480, days = 30) {
+  const deadline = Date.now() + seconds * 1000;
+
+  if (!(await getCursor('dimensoes')).full_done) {
+    await safe('dimensoes', () => syncDimensoes());
+  }
+
+  const produtosDone = () => getCursor('produtos').then((c) => c.full_done);
+  const steps = [
+    ['contatos', () => syncContatos({ deadline })],
+    ['produtos', () => syncProdutos({ deadline })],
+    ['estoque', async () => (await produtosDone()) ? syncEstoque({ deadline }) : true],
+    ['pedidos', () => syncPedidos({ fullDays: days, deadline })],
+    ['notas', () => syncNotas({ fullDays: days, deadline })],
+    ['ordem-compra', () => syncOrdemCompra({ fullDays: days })],
+    ['ordem-servico', () => syncOrdemServico({ fullDays: days })],
+    ['contas-receber', () => syncContasReceber({ fullDays: days })],
+    ['contas-pagar', () => syncContasPagar({ fullDays: days })],
+    ['separacao', () => syncSeparacao({ fullDays: days })],
+    ['expedicao', () => syncExpedicao({ fullDays: days })],
+    ['crm', () => syncCrm({ fullDays: days })],
+  ];
+
+  for (const [name, fn] of steps) {
+    const cur = await getCursor(name);
+    if (cur.full_done) continue;                 // já concluído em batch anterior
+    if (Date.now() >= deadline) { log('batch: deadline atingido'); return false; }
+    const r = await safeRet(name, fn);
+    if (r === false) { log(`batch: ${name} pausado (deadline) — fim do batch`); return false; }
+  }
+  log('batch: TODOS os recursos concluídos ✅');
+  return true;
 }
 
 export async function runIncremental() {

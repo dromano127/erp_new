@@ -31,6 +31,11 @@ const mode = process.argv[2] || 'incremental';
 try {
   if (mode === 'full') await S.runFull();
   else if (mode === 'incremental') await S.runIncremental();
+  else if (mode === 'batch') {
+    // batch <segundos> <dias>: avança até o deadline e retoma no próximo run.
+    const done = await S.runBatch(Number(process.argv[3]) || 480, Number(process.argv[4]) || 30);
+    process.exit(done ? 0 : 75); // 75 = ainda há trabalho (rode de novo)
+  }
   else if (mode === 'recent') await S.runRecent(Number(process.argv[3]) || 90);
   else if (mode === 'initial') { await S.syncDimensoes(); await S.syncContatos(); await S.syncProdutos(); await S.syncEstoque(); }
   else if (only[mode]) await only[mode]();
