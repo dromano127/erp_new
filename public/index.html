@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard ERP — FLORIPACAI</title>
+<style>
+  :root{
+    --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --base:#c3c2b7; --series:#2a78d6; --ring:rgba(11,11,11,.10);
+    --hover:rgba(42,120,214,.08);
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --page:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --base:#383835; --series:#3987e5; --ring:rgba(255,255,255,.10);
+    --hover:rgba(57,135,229,.15);
+  }}
+  :root[data-theme="light"]{--page:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--grid:#e1e0d9;--base:#c3c2b7;--series:#2a78d6;--ring:rgba(11,11,11,.10);--hover:rgba(42,120,214,.08)}
+  :root[data-theme="dark"]{--page:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--grid:#2c2c2a;--base:#383835;--series:#3987e5;--ring:rgba(255,255,255,.10);--hover:rgba(57,135,229,.15)}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;line-height:1.4}
+  .wrap{max-width:1220px;margin:0 auto;padding:16px}
+  header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+  h1{font-size:19px;margin:0}
+  .periods{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:12px 0}
+  .chip{background:var(--surface);border:1px solid var(--ring);color:var(--ink2);
+    border-radius:999px;padding:6px 12px;font-size:12.5px;cursor:pointer;user-select:none}
+  .chip:hover{background:var(--hover)}
+  .chip.on{background:var(--series);border-color:var(--series);color:#fff;font-weight:600}
+  .custom{display:flex;gap:6px;align-items:center;margin-left:auto}
+  .custom input{background:var(--surface);border:1px solid var(--ring);color:var(--ink);
+    border-radius:8px;padding:5px 8px;font-size:12.5px}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:6px 0 14px}
+  .kpi{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:12px 14px}
+  .kpi .lbl{color:var(--ink2);font-size:11.5px;margin-bottom:5px}
+  .kpi .val{font-size:21px;font-weight:650;letter-spacing:-.01em}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px}
+  .card{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:13px 15px 8px}
+  .card h2{font-size:13px;margin:0 0 8px;font-weight:600}
+  svg{width:100%;height:auto;display:block;overflow:visible}
+  .axis{fill:var(--muted);font-size:10px}
+  .axis-tab{fill:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+  .lbl-in{fill:var(--ink2);font-size:10px;font-variant-numeric:tabular-nums}
+  .gl{stroke:var(--grid);stroke-width:1}
+  /* produtos */
+  .prodcard{margin-top:12px}
+  .prodhead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+  .search{background:var(--surface);border:1px solid var(--ring);color:var(--ink);
+    border-radius:999px;padding:7px 12px;font-size:13px;min-width:200px}
+  .tblwrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--ring);white-space:nowrap}
+  th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  tbody tr{cursor:pointer}
+  tbody tr:hover{background:var(--hover)}
+  .hint{color:var(--muted);font-size:11px}
+  /* drawer */
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.4);opacity:0;pointer-events:none;transition:opacity .18s;z-index:20}
+  .scrim.on{opacity:1;pointer-events:auto}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:min(480px,94vw);background:var(--surface);
+    border-left:1px solid var(--ring);transform:translateX(100%);transition:transform .22s;z-index:21;
+    overflow-y:auto;padding:18px}
+  .drawer.on{transform:translateX(0)}
+  .drawer .x{position:absolute;top:14px;right:16px;font-size:22px;cursor:pointer;color:var(--ink2);border:none;background:none}
+  .drawer h3{margin:0 28px 2px 0;font-size:17px}
+  .drawer .meta{color:var(--muted);font-size:12px;margin-bottom:14px}
+  .mini{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px}
+  .mini .kpi .val{font-size:17px}
+  .sec{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:14px 0 6px}
+  .foot{color:var(--muted);font-size:11px;margin:18px 0 4px;text-align:center}
+  #tt{position:fixed;pointer-events:none;background:var(--ink);color:var(--surface);
+    padding:5px 8px;border-radius:6px;font-size:11px;opacity:0;transition:opacity .08s;
+    white-space:nowrap;z-index:30;font-variant-numeric:tabular-nums}
+  @media (max-width:520px){.drawer{width:100vw}.custom{margin-left:0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Dashboard ERP — FLORIPACAI</h1>
+    <button class="chip" id="theme">◐ tema</button>
+  </header>
+
+  <div class="periods" id="periods">
+    <span class="chip" data-d="30">30 dias</span>
+    <span class="chip" data-d="90">90 dias</span>
+    <span class="chip" data-d="180">6 meses</span>
+    <span class="chip" data-d="365">12 meses</span>
+    <span class="chip" data-y="1">Este ano</span>
+    <span class="chip on" data-all="1">Tudo</span>
+    <span class="custom">
+      <input type="date" id="from"> <span class="hint">até</span> <input type="date" id="to">
+      <span class="chip" id="applyCustom">aplicar</span>
+    </span>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+  <div class="grid" id="charts"></div>
+
+  <div class="card prodcard">
+    <div class="prodhead">
+      <h2>Produtos <span class="hint">— clique numa linha para ver detalhes</span></h2>
+      <input class="search" id="q" placeholder="buscar produto ou SKU…">
+    </div>
+    <div class="tblwrap">
+      <table id="ptbl"><thead><tr>
+        <th>Produto</th><th>Categoria</th><th class="num">Qtd</th>
+        <th class="num">Receita</th><th class="num">Margem</th><th class="num">Pedidos</th>
+      </tr></thead><tbody id="pbody"></tbody></table>
+    </div>
+  </div>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"></aside>
+<div id="tt"></div>
+
+<script>
+const NS='http://www.w3.org/2000/svg';
+const el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e};
+const brl=x=>{const n=Number(x)||0;return 'R$ '+(Math.abs(n)>=1e6?(n/1e6).toFixed(1)+' mi':Math.abs(n)>=1e3?(n/1e3).toFixed(0)+' mil':n.toFixed(0))};
+const brlFull=x=>(Number(x)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});
+const num=x=>(Number(x)||0).toLocaleString('pt-BR',{maximumFractionDigits:0});
+const iso=d=>d.toISOString().slice(0,10);
+const tt=document.getElementById('tt');
+const showTT=(e,t)=>{tt.textContent=t;tt.style.opacity=1;moveTT(e)};
+const moveTT=e=>{tt.style.left=(e.clientX+12)+'px';tt.style.top=(e.clientY+12)+'px'};
+const hideTT=()=>tt.style.opacity=0;
+addEventListener('mousemove',e=>{if(tt.style.opacity==1)moveTT(e)});
+
+// ---- estado de período ----
+let from='1900-01-01', to='2999-12-31';
+const qs='?from='+from; // placeholder
+function qparams(){return '?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)}
+
+function setPeriod(f,t,chipEl){
+  from=f; to=t;
+  document.querySelectorAll('#periods .chip[data-d],#periods .chip[data-y],#periods .chip[data-all]')
+    .forEach(c=>c.classList.remove('on'));
+  if(chipEl)chipEl.classList.add('on');
+  document.getElementById('from').value = f==='1900-01-01'?'':f;
+  document.getElementById('to').value   = t==='2999-12-31'?'':t;
+  load();
+}
+document.querySelectorAll('#periods .chip[data-d]').forEach(c=>c.onclick=()=>{
+  const d=new Date();const f=new Date();f.setDate(f.getDate()-Number(c.dataset.d));
+  setPeriod(iso(f),iso(d),c);
+});
+document.querySelector('#periods .chip[data-y]').onclick=e=>{
+  const y=new Date().getFullYear();setPeriod(y+'-01-01',iso(new Date()),e.target);
+};
+document.querySelector('#periods .chip[data-all]').onclick=e=>setPeriod('1900-01-01','2999-12-31',e.target);
+document.getElementById('applyCustom').onclick=()=>{
+  const f=document.getElementById('from').value||'1900-01-01';
+  const t=document.getElementById('to').value||'2999-12-31';
+  setPeriod(f,t,null);
+};
+
+// ---- tema ----
+document.getElementById('theme').onclick=()=>{
+  const cur=document.documentElement.getAttribute('data-theme');
+  const next=cur==='dark'?'light':cur==='light'?'':'dark';
+  if(next)document.documentElement.setAttribute('data-theme',next);
+  else document.documentElement.removeAttribute('data-theme');
+};
+
+// ---- gráficos ----
+function barsH(rows,fmt){
+  const W=520,rh=24,padT=6,padR=64,H=padT*2+Math.max(rows.length,1)*rh;
+  const max=Math.max(...rows.map(r=>r.v),1),labelW=160,plotX=labelW,plotW=W-labelW-padR;
+  const svg=el('svg',{viewBox:'0 0 '+W+' '+H,role:'img'});
+  rows.forEach((r,i)=>{
+    const y=padT+i*rh,bh=15,by=y+(rh-bh)/2,w=Math.max(2,plotW*r.v/max);
+    const name=(r.k||'').length>25?r.k.slice(0,24)+'…':(r.k||'');
+    const tx=el('text',{x:labelW-8,y:by+bh/2+3,'text-anchor':'end',class:'axis'});tx.textContent=name;svg.appendChild(tx);
+    const bar=el('rect',{x:plotX,y:by,width:w,height:bh,rx:4,fill:'var(--series)'});
+    bar.addEventListener('mousemove',e=>showTT(e,r.k+': '+fmt(r.v)));bar.addEventListener('mouseleave',hideTT);
+    svg.appendChild(bar);
+    const vt=el('text',{x:plotX+w+6,y:by+bh/2+3,class:'lbl-in'});vt.textContent=fmt(r.v);svg.appendChild(vt);
+  });
+  return svg;
+}
+function line(rows,fmt){
+  const W=520,H=180,padL=46,padR=12,padT=12,padB=24;
+  if(!rows.length){const s=el('svg',{viewBox:'0 0 '+W+' 60'});const t=el('text',{x:10,y:30,class:'axis'});t.textContent='sem dados no período';s.appendChild(t);return s;}
+  const max=Math.max(...rows.map(r=>r.v),1),plotW=W-padL-padR,plotH=H-padT-padB;
+  const x=i=>padL+(rows.length<=1?plotW/2:plotW*i/(rows.length-1)),y=v=>padT+plotH*(1-v/max);
+  const svg=el('svg',{viewBox:'0 0 '+W+' '+H,role:'img'});
+  for(let g=0;g<=3;g++){const gv=max*g/3,gy=y(gv);
+    svg.appendChild(el('line',{x1:padL,y1:gy,x2:W-padR,y2:gy,class:'gl'}));
+    const t=el('text',{x:padL-6,y:gy+3,'text-anchor':'end',class:'axis-tab'});t.textContent=fmt(gv);svg.appendChild(t);}
+  const dd=rows.map((r,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(r.v).toFixed(1)).join(' ');
+  svg.appendChild(el('path',{d:dd,fill:'none',stroke:'var(--series)','stroke-width':2,'stroke-linejoin':'round'}));
+  const step=Math.ceil(rows.length/8);
+  rows.forEach((r,i)=>{const cx=x(i),cy=y(r.v);
+    const dot=el('circle',{cx,cy,r:3.4,fill:'var(--series)'});
+    dot.addEventListener('mousemove',e=>showTT(e,r.k+': '+fmt(r.v)));dot.addEventListener('mouseleave',hideTT);svg.appendChild(dot);
+    if(i%step===0||i===rows.length-1){const t=el('text',{x:cx,y:H-8,'text-anchor':'middle',class:'axis'});t.textContent=r.k;svg.appendChild(t);}});
+  return svg;
+}
+function card(title,node){const c=document.createElement('div');c.className='card';
+  c.innerHTML='<h2>'+title+'</h2>';c.appendChild(node);return c;}
+function kpiHTML(list){return list.map(([l,v])=>'<div class="kpi"><div class="lbl">'+l+'</div><div class="val">'+v+'</div></div>').join('')}
+
+// ---- carga ----
+async function load(){
+  const ov=await fetch('/api/overview'+qparams()).then(r=>r.json());
+  const k=ov.kpi;
+  document.getElementById('kpis').innerHTML=kpiHTML([
+    ['Faturamento',brlFull(k.faturamento)],
+    ['Ticket médio',brlFull(k.pedidos?k.faturamento/k.pedidos:0)],
+    ['Pedidos',num(k.pedidos)],
+    ['Margem bruta',brlFull(k.margem)],
+    ['A receber (aberto)',brlFull(k.a_receber)],
+    ['A pagar (aberto)',brlFull(k.a_pagar)],
+    ['Valor em estoque',brlFull(k.estoque)],
+  ]);
+  const g=document.getElementById('charts');g.innerHTML='';
+  g.appendChild(card('Faturamento por mês',line(ov.byMonth,brl)));
+  g.appendChild(card('Faturamento por canal',barsH(ov.byChannel,brlFull)));
+  g.appendChild(card('Faturamento por vendedor',barsH(ov.bySeller,brlFull)));
+  const agOrder=['A vencer','1-30 dias','31-60 dias','61-90 dias','90+ dias','Sem vencimento'];
+  const ag=agOrder.map(kk=>({k:kk,v:(ov.aging.find(r=>r.k===kk)||{}).v||0})).filter(r=>r.v>0);
+  if(ag.length)g.appendChild(card('Contas a receber — aging (atual)',barsH(ag,brlFull)));
+  loadProducts();
+}
+
+let qTimer;
+async function loadProducts(){
+  const q=document.getElementById('q').value.trim();
+  const {rows}=await fetch('/api/products'+qparams()+'&q='+encodeURIComponent(q)+'&limit=100').then(r=>r.json());
+  const b=document.getElementById('pbody');b.innerHTML='';
+  for(const r of rows){
+    const tr=document.createElement('tr');tr.onclick=()=>openProduct(r.id,r.produto);
+    tr.innerHTML='<td>'+(r.produto||'?')+'</td><td>'+(r.categoria||'—')+'</td>'+
+      '<td class="num">'+num(r.qtd)+'</td><td class="num">'+brlFull(r.receita)+'</td>'+
+      '<td class="num">'+brlFull(r.margem)+'</td><td class="num">'+num(r.pedidos)+'</td>';
+    b.appendChild(tr);
+  }
+  document.getElementById('foot').textContent=rows.length+' produtos no período • dados ao vivo do Neon';
+}
+document.getElementById('q').oninput=()=>{clearTimeout(qTimer);qTimer=setTimeout(loadProducts,300)};
+
+// ---- drawer de produto ----
+const drawer=document.getElementById('drawer'),scrim=document.getElementById('scrim');
+function closeDrawer(){drawer.classList.remove('on');scrim.classList.remove('on');drawer.setAttribute('aria-hidden','true')}
+scrim.onclick=closeDrawer;
+addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer()});
+
+async function openProduct(id,nome){
+  drawer.classList.add('on');scrim.classList.add('on');drawer.setAttribute('aria-hidden','false');
+  drawer.innerHTML='<button class="x">×</button><h3>'+(nome||'')+'</h3><div class="meta">carregando…</div>';
+  drawer.querySelector('.x').onclick=closeDrawer;
+  const d=await fetch('/api/product/'+id+qparams()).then(r=>r.json());
+  const i=d.info||{},s=d.stats||{};
+  const estoque=(d.stock||[]).reduce((a,x)=>a+(x.saldo||0),0);
+  let html='<button class="x">×</button>';
+  html+='<h3>'+(i.descricao||nome||'Produto')+'</h3>';
+  html+='<div class="meta">SKU '+(i.sku||'—')+' • '+(i.categoria||'sem categoria')+(i.marca?' • '+i.marca:'')+
+        ' • '+(i.situacao==='A'?'Ativo':i.situacao==='I'?'Inativo':i.situacao||'')+'</div>';
+  html+='<div class="mini">'+kpiHTML([
+    ['Receita (período)',brlFull(s.receita)],
+    ['Margem (período)',brlFull(s.margem)],
+    ['Qtd vendida',num(s.qtd)],
+    ['Pedidos',num(s.pedidos)],
+    ['Preço venda',brlFull(i.preco)],
+    ['Custo médio',brlFull(i.preco_custo_medio)],
+  ])+'</div>';
+  html+='<div class="sec">Estoque atual: '+num(estoque)+' un</div>';
+  const cont=document.createElement('div');cont.innerHTML=html;
+  drawer.innerHTML='';drawer.appendChild(cont);
+  drawer.querySelector('.x').onclick=closeDrawer;
+  // vendas por mês
+  const secV=document.createElement('div');secV.className='sec';secV.textContent='Vendas por mês';drawer.appendChild(secV);
+  drawer.appendChild(line((d.monthly||[]).map(r=>({k:r.k,v:r.v})),brl));
+  // últimos pedidos
+  const secO=document.createElement('div');secO.className='sec';secO.textContent='Últimos pedidos';drawer.appendChild(secO);
+  const tw=document.createElement('div');tw.className='tblwrap';
+  let ot='<table><thead><tr><th>Nº</th><th>Data</th><th>Cliente</th><th class="num">Qtd</th><th class="num">Total</th></tr></thead><tbody>';
+  for(const o of (d.orders||[])){ot+='<tr><td>'+(o.numero||'')+'</td><td>'+(o.data||'').slice(0,10)+
+    '</td><td>'+((o.cliente||'—').slice(0,22))+'</td><td class="num">'+num(o.quantidade)+
+    '</td><td class="num">'+brlFull(o.total)+'</td></tr>';}
+  ot+='</tbody></table>';tw.innerHTML=ot;drawer.appendChild(tw);
+}
+
+load();
+</script>
+</body>
+</html>

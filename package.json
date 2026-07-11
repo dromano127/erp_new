@@ -6,7 +6,9 @@
   "description": "Réplica em Postgres (Neon) dos dados da API Tiny/Olist ERP v3 — relatórios + backup",
   "scripts": {
     "db:apply": "node scripts/apply-sql.mjs db/schema.sql",
-    "db:query": "node scripts/query.mjs"
+    "db:query": "node scripts/query.mjs",
+    "app": "node src/server.mjs",
+    "dashboard": "node scripts/dashboard.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.0",
