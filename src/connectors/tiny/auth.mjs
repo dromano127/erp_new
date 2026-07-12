@@ -93,23 +93,37 @@ export async function refresh(refreshToken) {
  * Retorna um access_token válido, renovando se estiver perto de expirar.
  * Lança se não houver tokens (é preciso rodar o fluxo interativo antes).
  */
+// Cache do token em memória: sem isto, cada chamada da API fazia um SELECT no
+// Neon (round-trip pelo proxy) — dominava a latência quando há concorrência.
+// Guardamos o access_token válido e só tocamos o Neon perto do vencimento.
+let cached = null; // { access_token, expMs }
+let refreshing = null; // promessa única de refresh (evita corridas entre workers)
+
 export async function getAccessToken() {
-  const rows = await sql.query(
-    'SELECT access_token, refresh_token, expires_at FROM sync_tokens WHERE source = $1',
-    [SOURCE],
-  );
-  const row = rows[0];
-  if (!row || !row.refresh_token) {
-    throw new Error(
-      'Sem tokens. Rode `node scripts/tiny-auth.mjs url`, autorize e depois ' +
-        '`node scripts/tiny-auth.mjs code <CODE>`.',
+  if (cached && cached.expMs - Date.now() >= 60_000) return cached.access_token;
+  if (refreshing) return refreshing; // um worker já está renovando/lendo
+  refreshing = (async () => {
+    const rows = await sql.query(
+      'SELECT access_token, refresh_token, expires_at FROM sync_tokens WHERE source = $1',
+      [SOURCE],
     );
-  }
-  const expMs = row.expires_at ? new Date(row.expires_at).getTime() : 0;
-  // Renova se faltar menos de 60s (ou já expirou).
-  if (expMs - Date.now() < 60_000) {
-    const tok = await refresh(row.refresh_token);
-    return tok.access_token;
-  }
-  return row.access_token;
+    const row = rows[0];
+    if (!row || !row.refresh_token) {
+      throw new Error(
+        'Sem tokens. Rode `node scripts/tiny-auth.mjs url`, autorize e depois ' +
+          '`node scripts/tiny-auth.mjs code <CODE>`.',
+      );
+    }
+    const expMs = row.expires_at ? new Date(row.expires_at).getTime() : 0;
+    if (expMs - Date.now() < 60_000) {
+      const tok = await refresh(row.refresh_token);
+      cached = { access_token: tok.access_token,
+        expMs: Date.now() + (tok.expires_in ? tok.expires_in * 1000 : 3600_000) };
+    } else {
+      cached = { access_token: row.access_token, expMs };
+    }
+    return cached.access_token;
+  })();
+  try { return await refreshing; }
+  finally { refreshing = null; }
 }

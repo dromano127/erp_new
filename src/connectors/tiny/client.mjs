@@ -12,11 +12,18 @@ const RATE = Number(process.env.SYNC_RATE_LIMIT || 1); // req/s
 const MIN_INTERVAL = 1000 / RATE;
 const MAX_RETRIES = 6;
 
-let lastAt = 0;
-async function throttle() {
-  const wait = MIN_INTERVAL - (Date.now() - lastAt);
-  if (wait > 0) await sleep(wait);
-  lastAt = Date.now();
+// Throttle seguro para concorrência: cada chamada RESERVA um slot MIN_INTERVAL
+// após o anterior (leitura+escrita síncronas de nextSlot, sem await no meio →
+// sem corrida). N chamadas concorrentes recebem slots em 0, Δ, 2Δ, … garantindo
+// ≤ RATE req/s globalmente mesmo com um pool de workers. Assim a concorrência
+// esconde a latência de rede sem estourar o limite (evita 429).
+let nextSlot = 0;
+function throttle() {
+  const now = Date.now();
+  const slot = Math.max(now, nextSlot);
+  nextSlot = slot + MIN_INTERVAL;
+  const wait = slot - now;
+  return wait > 0 ? sleep(wait) : Promise.resolve();
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

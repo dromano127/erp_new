@@ -22,7 +22,7 @@ if (proxy) {
   setGlobalDispatcher(
     new ProxyAgent({
       uri: proxy,
-      connections: 8,
+      connections: 32,
       keepAliveTimeout: 60_000,
       keepAliveMaxTimeout: 120_000,
       headersTimeout: 60_000,

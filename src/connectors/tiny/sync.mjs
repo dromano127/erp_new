@@ -57,6 +57,8 @@ class Deadline extends Error {}
  * Ao terminar, zera o offset e marca full_done.
  * @returns {Promise<boolean>} true se concluiu o recurso, false se pausou.
  */
+const CONCURRENCY = Math.max(1, Number(process.env.SYNC_CONCURRENCY || 6));
+
 async function resumableListDetail(recurso, listPath, detailPath, persistFn, {
   query = {},
   pageSize = 100,
@@ -74,22 +76,36 @@ async function resumableListDetail(recurso, listPath, detailPath, persistFn, {
     }
     const page = await get(listPath, { ...query, limit: pageSize, offset });
     const itens = page?.itens ?? [];
-    for (const item of itens) {
-      // checa o deadline POR ITEM: uma página pode levar 100-200s; sem isso o
-      // batch estoura o timeout do processo. Ao pausar mid-página, salvamos o
-      // offset do INÍCIO da página (esta será refeita — persist é idempotente).
-      if (Date.now() >= deadline) {
-        await setCursor(recurso, { last_offset: offset });
-        log(`${recurso}: pausado no offset ${offset} (deadline, mid-página)`);
-        return false;
+    // Busca os detalhes com um POOL DE WORKERS (streaming). O gargalo é a
+    // latência de rede por item, não o rate limit — o throttle global em
+    // client.mjs continua limitando o INÍCIO das chamadas, mas a concorrência
+    // sobrepõe as latências. Um pool streaming (em vez de lotes) evita que um
+    // pedido lento — com muitos itens — trave os demais. Deadline checado por
+    // item; ao pausar mid-página, salva o offset do INÍCIO da página (será
+    // refeita — persist é idempotente).
+    let cursor = 0;
+    let paused = false;
+    const worker = async () => {
+      for (;;) {
+        if (Date.now() >= deadline) { paused = true; return; }
+        const idx = cursor++;
+        if (idx >= itens.length) return;
+        const item = itens[idx];
+        try {
+          const detail = await get(detailPath(item.id));
+          if (detail) await persistFn(detail, item);
+        } catch (err) {
+          // um registro problemático não pode travar o recurso inteiro.
+          log(`${recurso}: ERRO no id ${item.id} — ${err.message} (pulado)`);
+        }
       }
-      try {
-        const detail = await get(detailPath(item.id));
-        if (detail) await persistFn(detail, item);
-      } catch (err) {
-        // um registro problemático não pode travar o recurso inteiro.
-        log(`${recurso}: ERRO no id ${item.id} — ${err.message} (pulado)`);
-      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, itens.length || 1) }, worker));
+    if (paused) {
+      await setCursor(recurso, { last_offset: offset });
+      log(`${recurso}: pausado no offset ${offset} (deadline, mid-página)`);
+      return false;
     }
     const total = page?.paginacao?.total ?? 0;
     offset += pageSize;

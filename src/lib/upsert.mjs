@@ -45,9 +45,38 @@ export async function upsert(table, row, conflict = ['source', 'source_id']) {
   await sql.query(text, vals);
 }
 
-/** Upsert de várias linhas (sequencial, simples). */
+const serial = (v) => {
+  v = nz(v);
+  return v !== null && typeof v === 'object' ? JSON.stringify(v) : v;
+};
+
+/**
+ * Insere/upserta várias linhas em UMA ÚNICA query (multi-row VALUES) em vez de
+ * um round-trip por linha. É o caminho quente do sincronizador (itens/parcelas
+ * de cada pedido): colapsar N inserts em 1 corta drasticamente a latência total
+ * por registro (cada round-trip ao Neon passa pelo proxy). As linhas vindas dos
+ * `.map` dos persisters têm o mesmo conjunto de colunas; ainda assim usamos a
+ * UNIÃO das chaves e preenchemos ausentes com null, por segurança.
+ */
 export async function upsertMany(table, rows, conflict) {
-  for (const row of rows) await upsert(table, row, conflict);
+  if (!rows || rows.length === 0) return;
+  if (rows.length === 1) return upsert(table, rows[0], conflict);
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  if (cols.length === 0) return;
+  const vals = [];
+  const tuples = rows.map((r) => {
+    const ph = cols.map((c) => { vals.push(serial(r[c])); return `$${vals.length}`; });
+    return `(${ph.join(', ')})`;
+  });
+  let text = `INSERT INTO ${table} (${cols.join(', ')}) VALUES ${tuples.join(', ')}`;
+  if (conflict) {
+    const updates = cols
+      .filter((c) => !conflict.includes(c))
+      .map((c) => `${c} = EXCLUDED.${c}`);
+    text += ` ON CONFLICT (${conflict.join(', ')}) ` +
+      (updates.length ? `DO UPDATE SET ${updates.join(', ')}` : 'DO NOTHING');
+  }
+  await sql.query(text, vals);
 }
 
 /**
