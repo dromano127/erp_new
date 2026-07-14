@@ -208,6 +208,17 @@ function windowQuery(cur, incremental, days = 30) {
   return { dataInicial: toDate(ini), dataFinal: toDate(new Date()) };
 }
 
+// Uma conta só tem baixas/recebimentos se houve pagamento. O detalhe já traz
+// valorPago e situacao; se nada foi pago (aberto/cancelada/prevista), pular a
+// chamada de /recebimentos evita metade dos round-trips no backfill. Em caso de
+// dúvida (situação de pagamento), busca — nunca perde uma baixa existente.
+function temBaixa(detail) {
+  const pago = Number(detail?.valorPago);
+  if (Number.isFinite(pago) && pago > 0) return true;
+  const sit = String(detail?.situacao ?? '').toLowerCase();
+  return sit === 'pago' || sit === 'parcial' || sit === 'baixado' || sit === 'recebido';
+}
+
 export async function syncPedidos({ incremental = false, fullDays = 3650, deadline = Infinity } = {}) {
   const cur = await getCursor('pedidos');
   const query = incremental && cur.last_sync_at
@@ -260,8 +271,13 @@ export async function syncContasReceber({ incremental = false, fullDays = 3650, 
   return resumableListDetail('contas_receber', '/contas-receber', (id) => `/contas-receber/${id}`,
     async (detail, item) => {
       await P.persistContaReceber(detail);
-      const rec = await get(`/contas-receber/${item.id}/recebimentos`);
-      if (rec) await P.persistBaixas('cr', item.id, rec.itens ?? rec);
+      // Só busca as baixas quando houve pagamento: contas abertas/canceladas
+      // não têm recebimentos, então pular a 2ª chamada aqui ~dobra a vazão do
+      // backfill sem perder dado (o detalhe já traz valorPago/saldo/situacao).
+      if (temBaixa(detail)) {
+        const rec = await get(`/contas-receber/${item.id}/recebimentos`);
+        if (rec) await P.persistBaixas('cr', item.id, rec.itens ?? rec);
+      }
     }, { query, deadline });
 }
 
@@ -272,8 +288,10 @@ export async function syncContasPagar({ incremental = false, fullDays = 3650, de
   return resumableListDetail('contas_pagar', '/contas-pagar', (id) => `/contas-pagar/${id}`,
     async (detail, item) => {
       await P.persistContaPagar(detail);
-      const rec = await get(`/contas-pagar/${item.id}/recebimentos`);
-      if (rec) await P.persistBaixas('cp', item.id, rec.itens ?? rec);
+      if (temBaixa(detail)) {
+        const rec = await get(`/contas-pagar/${item.id}/recebimentos`);
+        if (rec) await P.persistBaixas('cp', item.id, rec.itens ?? rec);
+      }
     }, { query, deadline });
 }
 
