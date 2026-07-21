@@ -45,6 +45,11 @@ async function setCursor(recurso, { last_sync_at, full_done, last_offset }) {
 }
 // data 'YYYY-MM-DD' a partir de um Date/ISO (para os filtros da API)
 const toDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+// data-e-hora 'YYYY-MM-DD 00:00:00' — alguns endpoints (contatos/produtos)
+// validam dataAtualizacao/dataAlteracao como DATETIME e rejeitam só a data.
+// Ancoramos na meia-noite do dia do last_sync_at: janela generosa (nunca perde
+// alteração por diferença de fuso) e idempotente (upsert reprocessa sem duplicar).
+const toDateTime = (d) => (d ? `${new Date(d).toISOString().slice(0, 10)} 00:00:00` : null);
 
 // Erro sinalizando fim do orçamento de tempo do batch (interrupção limpa).
 class Deadline extends Error {}
@@ -178,14 +183,14 @@ export async function syncDimensoes() {
 // =====================================================================
 export async function syncContatos({ incremental = false, deadline = Infinity } = {}) {
   const cur = await getCursor('contatos');
-  const query = incremental && cur.last_sync_at ? { dataAtualizacao: toDate(cur.last_sync_at) } : {};
+  const query = incremental && cur.last_sync_at ? { dataAtualizacao: toDateTime(cur.last_sync_at) } : {};
   return resumableListDetail('contatos', '/contatos', (id) => `/contatos/${id}`,
     (detail) => P.persistContato(detail), { query, deadline });
 }
 
 export async function syncProdutos({ incremental = false, deadline = Infinity } = {}) {
   const cur = await getCursor('produtos');
-  const query = incremental && cur.last_sync_at ? { dataAlteracao: toDate(cur.last_sync_at) } : {};
+  const query = incremental && cur.last_sync_at ? { dataAlteracao: toDateTime(cur.last_sync_at) } : {};
   return resumableListDetail('produtos', '/produtos', (id) => `/produtos/${id}`,
     async (detail, item) => {
       await P.persistProduto(detail);
